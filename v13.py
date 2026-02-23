@@ -125,7 +125,7 @@ with st.sidebar:
     refresh_rate = st.slider("刷新頻率 (秒)", 30, 600, 60)
     
     st.divider()
-    custom_alert_input = st.text_area("🎯 價格水平預警", placeholder="TSLA 升穿 420")
+    custom_alert_input = st.text_area("🎯 價格水平預警,格式: 代碼 升穿/跌穿 價格 (如: TSLA 升穿 420,TSLA 跌穿 400)", placeholder="TSLA 升穿 420")
     
     st.divider()
     vol_threshold = st.number_input("成交量倍數", value=2.0, step=0.5)
