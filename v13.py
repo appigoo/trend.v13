@@ -10,7 +10,7 @@ import requests
 import re
 
 # --- 1. 頁面配置與 CSS ---
-st.set_page_config(page_title="多股實時監控系統", layout="wide")
+st.set_page_config(page_title="多股多週期共振監控", layout="wide")
 
 st.markdown("""
 <style>
@@ -24,17 +24,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. Telegram 通知 ---
-def send_telegram_msg(sym, action, reason, price, p_change, v_ratio):
+# --- 2. Telegram 通知 (詳盡版) ---
+def send_telegram_msg(sym, action, detail_reasons, price, pc, vr):
     try:
         token = st.secrets["TELEGRAM_BOT_TOKEN"]
         chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        
+        # 組合詳盡的訊號說明
+        reason_text = ""
+        for interval, info in detail_reasons.items():
+            reason_text += f"📍 【{interval} 週期】:\n{info}\n"
+
         message = (
-            f"🔔 【{action}預警】: {sym}\n"
-            f"現價: {price:.2f} ({p_change:+.2f}%)\n"
-            f"量比: {v_ratio:.1f}x\n"
+            f"🔔 {action}: {sym}\n"
+            f"現價: {price:.2f} ({pc:+.2f}%)\n"
+            f"量比: {vr:.1f}x\n"
             f"--------------------\n"
-            f"📋 判定根據:\n{reason}"
+            f"📋 多週期訊號詳情:\n{reason_text}"
         )
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         params = {"chat_id": chat_id, "text": message}
@@ -63,138 +69,134 @@ def fetch_data(symbol, p, i):
         return df
     except: return None
 
-# --- 4. 價格水平預警解析 ---
-def check_custom_alerts(sym, price, alert_str):
-    alerts = re.split(r'[,\n]', alert_str)
-    for a in alerts:
-        a = a.strip().upper()
-        if not a: continue
-        match = re.search(rf"{sym}\s*([><]|升穿|跌穿)\s*(\d+\.?\d*)", a)
-        if match:
-            op, target = match.group(1), float(match.group(2))
-            if (op in ['>', '升穿'] and price >= target) or (op in ['<', '跌穿'] and price <= target):
-                return True, f"🎯 自定義價格預警: {a}"
-    return False, ""
-
-# --- 5. 單一週期訊號判定 ---
-def get_period_signal(df, p_limit, v_limit, use_breakout, use_macd_flip):
-    if df is None or len(df) < 10: return None
+# --- 4. 單一週期訊號判定 (返回具體理由) ---
+def get_period_signal_detail(df, p_limit, v_limit, use_breakout, use_macd_flip):
+    if df is None or len(df) < 10: return None, ""
     last = df.iloc[-1]; prev = df.iloc[-2]
     price = float(last['Close'])
     p_change = ((price - float(prev['Close'])) / float(prev['Close'])) * 100
     v_ratio = float(last['Volume']) / float(last['Vol_Avg']) if last['Vol_Avg'] > 0 else 1
     
-    # 均線趨勢
+    reasons = []
+    sig_type = None
+
+    # 1. 均線趨勢量價
     is_bull = price > last['EMA200'] and last['EMA20'] > last['EMA60']
     is_bear = price < last['EMA200'] and last['EMA20'] < last['EMA60']
     
-    # 條件
-    cond_bull = (is_bull and p_change >= p_limit and v_ratio >= v_limit)
-    cond_bear = (is_bear and p_change <= -p_limit and v_ratio >= v_limit)
-    
+    # 2. 5K 突破
+    is_break_h, is_break_l = False, False
     if use_breakout:
         max5, min5 = df.iloc[-6:-1]['High'].max(), df.iloc[-6:-1]['Low'].min()
-        cond_bull = cond_bull or (price > max5)
-        cond_bear = cond_bear or (price < min5)
-    
+        is_break_h, is_break_l = price > max5, price < min5
+
+    # 3. MACD 反轉
+    m_bull, m_bear = False, False
     if use_macd_flip and len(df) >= 8:
         hw = df['Hist'].iloc[-8:].values
-        cond_bull = cond_bull or (all(x < 0 for x in hw[:-1]) and hw[-1] > 0)
-        cond_bear = cond_bear or (all(x > 0 for x in hw[:-1]) and hw[-1] < 0)
-        
-    if cond_bull: return "BULL", p_change, v_ratio
-    if cond_bear: return "BEAR", p_change, v_ratio
-    return None, p_change, v_ratio
+        m_bull = all(x < 0 for x in hw[:-1]) and hw[-1] > 0
+        m_bear = all(x > 0 for x in hw[:-1]) and hw[-1] < 0
 
-# --- 6. 側邊欄配置 ---
+    # 彙整做多理由
+    if (is_bull and p_change >= p_limit and v_ratio >= v_limit) or is_break_h or m_bull:
+        sig_type = "BULL"
+        if is_bull and p_change >= p_limit: reasons.append(f"  • 量價強勢({p_change:+.2f}%)")
+        if is_break_h: reasons.append("  • 突破前5K高點")
+        if m_bull: reasons.append("  • MACD冰點反轉(7負轉1正)")
+        
+    # 彙整做空理由
+    elif (is_bear and p_change <= -p_limit and v_ratio >= v_limit) or is_break_l or m_bear:
+        sig_type = "BEAR"
+        if is_bear and p_change <= -p_limit: reasons.append(f"  • 量價轉弱({p_change:+.2f}%)")
+        if is_break_l: reasons.append("  • 跌破前5K低點")
+        if m_bear: reasons.append("  • MACD高位反轉(7正轉1負)")
+
+    return sig_type, "\n".join(reasons)
+
+# --- 5. 側邊欄 ---
 with st.sidebar:
-    st.header("⚙️ 參數設定")
-    input_symbols = st.text_input("股票代碼", value="TSLA, NIO, TSLL, XPEV, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM, BTC-USD").upper()
+    st.header("⚙️ 系統參數")
+    input_symbols = st.text_input("股票代碼", value="TSLA, NVDA, AAPL, BTC-USD").upper()
     symbols = [s.strip() for s in input_symbols.split(",") if s.strip()]
     
-    # 多週期監控 (NEW)
-    st.subheader("⏱ 多週期共振設定")
-    selected_intervals = st.multiselect("選擇監測週期 (需全數符合才通知)", ["1m", "5m", "15m", "30m", "1h", "1d"], default=["5m"])
-    sel_period = st.selectbox("數據讀取範圍", ["1d", "5d", "1mo"], index=1)
-    
+    st.subheader("⏱ 多週期共振監測")
+    selected_intervals = st.multiselect("選取週期 (需同步才通知)", ["1m", "5m", "15m", "30m", "1h"], default=["5m", "15m"])
+    sel_period = st.selectbox("數據範圍", ["1d", "5d", "1mo"], index=1)
     refresh_rate = st.slider("刷新頻率 (秒)", 30, 600, 60)
     
     st.divider()
-    custom_alert_input = st.text_area("🎯 自定義價格預警 (TSLA 升穿 420)", value="")
+    custom_alert_input = st.text_area("🎯 價格水平預警", placeholder="TSLA 升穿 420")
+    
     st.divider()
-    vol_threshold = st.number_input("成交量異常倍數", value=2.0, step=0.5)
-    price_threshold = st.number_input("股價單根異動 (%)", value=1.0, step=0.1)
+    vol_threshold = st.number_input("成交量倍數", value=2.0, step=0.5)
+    price_threshold = st.number_input("價格異動(%)", value=1.0, step=0.1)
     use_breakout = st.checkbox("5K 突破監控", value=True)
-    use_macd_flip = st.checkbox("MACD 7+1 反轉監控", value=True)
+    use_macd_flip = st.checkbox("MACD 反轉監控", value=True)
 
-# --- 7. 主介面循環 ---
-st.title("📈 智能多週期共振監控系統")
+# --- 6. 主介面 ---
+st.title("📈 多週期策略共振監控")
 placeholder = st.empty()
 
 while True:
-    all_data = {} # 僅存儲最後一個週期的 df 用於繪圖
+    all_dfs = {}
     with placeholder.container():
-        st.subheader(f"🔍 即時警報摘要 (監測週期: {', '.join(selected_intervals)})")
         if symbols and selected_intervals:
             cols = st.columns(len(symbols))
             for i, sym in enumerate(symbols):
-                period_results = []
-                last_df = None
-                
-                # 遍歷所有選定週期
+                res_types = []
+                res_details = {}
+                last_pc, last_vr = 0, 0
+                main_df = None
+
                 for interval in selected_intervals:
                     df = fetch_data(sym, sel_period, interval)
-                    sig, pc, vr = get_period_signal(df, price_threshold, vol_threshold, use_breakout, use_macd_flip)
-                    period_results.append(sig)
-                    last_df = df # 用於展示與價格檢測
-                
-                if last_df is not None:
-                    all_data[sym] = last_df
-                    current_price = last_df['Close'].iloc[-1]
+                    sig, detail = get_period_signal_detail(df, price_threshold, vol_threshold, use_breakout, use_macd_flip)
+                    res_types.append(sig)
+                    if sig: res_details[interval] = detail
+                    if interval == selected_intervals[-1]: 
+                        main_df = df
+                        if df is not None:
+                            last_pc = ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+                            last_vr = df['Volume'].iloc[-1] / df['Vol_Avg'].iloc[-1]
+
+                if main_df is not None:
+                    all_dfs[sym] = main_df
+                    cur_p = main_df['Close'].iloc[-1]
                     
-                    # 判斷是否共振 (所有週期訊號一致且不為 None)
-                    is_all_bull = all(r == "BULL" for r in period_results)
-                    is_all_bear = all(r == "BEAR" for r in period_results)
+                    # 共振邏輯
+                    is_all_bull = all(r == "BULL" for r in res_types)
+                    is_all_bear = all(r == "BEAR" for r in res_types)
                     
-                    # 自定義價格預警 (獨立判斷)
-                    hit_custom, custom_reason = check_custom_alerts(sym, current_price, custom_alert_input)
-                    
-                    # 決定狀態與通知
                     status, color, card_style = "⚖️ 觀望", "#aaaaaa", ""
                     if is_all_bull:
                         status, color, card_style = "🚀 多頭共振", "#00ff00", "blink-bull"
-                        send_telegram_msg(sym, "🔥 多週期共振", f"✅ 週期 {selected_intervals} 全數看多", current_price, pc, vr)
+                        send_telegram_msg(sym, "🔥 【多頭共振觸發】", res_details, cur_p, last_pc, last_vr)
                     elif is_all_bear:
                         status, color, card_style = "🔻 空頭共振", "#ff4b4b", "blink-bear"
-                        send_telegram_msg(sym, "❄️ 多週期共振", f"❌ 週期 {selected_intervals} 全數看空", current_price, pc, vr)
-                    
-                    if hit_custom:
-                        send_telegram_msg(sym, "🎯 價格預警", custom_reason, current_price, pc, vr)
-                        status = "🎯 價格達標" if status == "⚖️ 觀望" else status + " + 🎯"
+                        send_telegram_msg(sym, "❄️ 【空頭共振觸發】", res_details, cur_p, last_pc, last_vr)
 
                     cols[i].markdown(f"""
                         <div class='{card_style}' style='border:1px solid #444; padding:15px; border-radius:10px; text-align:center;'>
                             <h3 style='margin:0;'>{sym}</h3>
                             <h2 style='color:{color}; margin:10px 0;'>{status}</h2>
-                            <p style='font-size:1.3em; margin:0;'><b>{current_price:.2f}</b></p>
-                            <hr style='margin:5px 0; border:0.5px solid #333;'>
-                            <p style='font-size:0.8em; color:#ffa500;'>週期: {len([r for r in period_results if r])}/{len(selected_intervals)} 觸發</p>
+                            <p style='font-size:1.3em; margin:0;'><b>{cur_p:.2f}</b></p>
+                            <p style='font-size:0.8em; color:#ffa500; margin-top:5px;'>訊號: {len(res_details)}/{len(selected_intervals)}</p>
                         </div>
                     """, unsafe_allow_html=True)
 
         st.divider()
-        if all_data:
-            tabs = st.tabs(list(all_data.keys()))
-            for i, (sym, df) in enumerate(all_data.items()):
+        if all_dfs:
+            tabs = st.tabs(list(all_dfs.keys()))
+            for i, (sym, df) in enumerate(all_dfs.items()):
                 with tabs[i]:
-                    plot_df = df.tail(35).copy()
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                    fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'], name='K線'), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['EMA20'], name='EMA20', line=dict(color='yellow', width=1)), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['EMA200'], name='EMA200', line=dict(color='red', width=1.5)), row=1, col=1)
-                    colors = ['#00ff00' if x >= 0 else '#ff4b4b' for x in plot_df['Hist']]
-                    fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Hist'], name='MACD Hist', marker_color=colors), row=2, col=1)
+                    pdf = df.tail(35)
+                    fig.add_trace(go.Candlestick(x=pdf.index, open=pdf['Open'], high=pdf['High'], low=pdf['Low'], close=pdf['Close'], name='K線'), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=pdf.index, y=pdf['EMA20'], name='EMA20', line=dict(color='yellow', width=1)), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=pdf.index, y=pdf['EMA200'], name='EMA200', line=dict(color='red', width=1.5)), row=1, col=1)
+                    colors = ['#00ff00' if x >= 0 else '#ff4b4b' for x in pdf['Hist']]
+                    fig.add_trace(go.Bar(x=pdf.index, y=pdf['Hist'], name='MACD', marker_color=colors), row=2, col=1)
                     fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=10,b=10))
-                    st.plotly_chart(fig, use_container_width=True, key=f"fig_{sym}")
-        st.caption(f"📅 更新: {datetime.now().strftime('%H:%M:%S')}")
+                    st.plotly_chart(fig, use_container_width=True, key=f"chart_{sym}")
+        st.caption(f"📅 更新時間: {datetime.now().strftime('%H:%M:%S')}")
     time.sleep(refresh_rate)
