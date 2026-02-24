@@ -43,8 +43,8 @@ def diagnose_trend_stage(df):
 # --- 2. 市場環境診斷 ---
 def get_market_context():
     try:
-        vix_data = yf.download("^VIX", period="2d", interval="5m", progress=False)
-        spy_data = yf.download("VOO", period="2d", interval="5m", progress=False)
+        vix_data = yf.download("^VIX", period="2d", interval="15m", progress=False)
+        spy_data = yf.download("IVV", period="2d", interval="15m", progress=False)
         vix_price = vix_data['Close'].iloc[-1]
         vix_prev = vix_data['Close'].iloc[-2]
         spy_change = ((spy_data['Close'].iloc[-1] - spy_data['Close'].iloc[-2]) / spy_data['Close'].iloc[-2]) * 100
