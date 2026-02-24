@@ -122,7 +122,7 @@ with st.sidebar:
     st.subheader("⏱ 多週期共振監測")
     selected_intervals = st.multiselect("選取週期 (需同步才通知)", ["1m", "5m", "15m", "30m", "1h"], default=["5m", "15m"])
     sel_period = st.selectbox("數據範圍", ["1d", "5d", "1mo"], index=1)
-    refresh_rate = st.slider("刷新頻率 (秒)", 30, 600, 60)
+    refresh_rate = st.slider("刷新頻率 (秒)", 30, 600, 120)
     
     st.divider()
     custom_alert_input = st.text_area("🎯 價格水平預警,格式: 代碼 升穿/跌穿 價格 (如: TSLA 升穿 420,TSLA 跌穿 400)", placeholder="TSLA 升穿 420")
