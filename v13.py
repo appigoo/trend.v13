@@ -116,7 +116,7 @@ def get_period_signal_detail(df, p_limit, v_limit, use_breakout, use_macd_flip):
 # --- 5. 側邊欄 ---
 with st.sidebar:
     st.header("⚙️ 系統參數")
-    input_symbols = st.text_input("股票代碼", value="TSLA, NVDA, AAPL, BTC-USD").upper()
+    input_symbols = st.text_input("股票代碼", value="TSLA, NIO, TSLL, XPEV, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM, GLD, BTC-USD").upper()
     symbols = [s.strip() for s in input_symbols.split(",") if s.strip()]
     
     st.subheader("⏱ 多週期共振監測")
