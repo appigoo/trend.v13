@@ -24,18 +24,32 @@ st.markdown("""
 # --- 2. 市場環境診斷 (VIX & SPY) ---
 def get_market_context():
     try:
-        # 抓取 VIX (波動率) 與 SPY (標普500)
-        vix_data = yf.download("^VIX", period="2d", interval="15m", progress=False)
-        spy_data = yf.download("SPY", period="2d", interval="15m", progress=False)
-        vix_price = vix_data['Close'].iloc[-1]
-        vix_prev = vix_data['Close'].iloc[-2]
-        spy_change = ((spy_data['Close'].iloc[-1] - spy_data['Close'].iloc[-2]) / spy_data['Close'].iloc[-2]) * 100
+        # 1. 獨立獲取 VIX
+        vix_df = yf.download("^VIX", period="2d", interval="15m", progress=False, multi_level=False)
+        # 2. 獨立獲取 SPY
+        spy_df = yf.download("SPY", period="2d", interval="15m", progress=False, multi_level=False)
         
-        v_status = "🔴 極端恐慌" if vix_price > 28 else "🟡 波動放大" if vix_price > 20 else "🟢 環境平穩"
-        v_trend = "📈 恐慌升溫" if vix_price > vix_prev else "📉 恐慌緩解"
-        return float(vix_price), float(spy_change), v_status, v_trend
-    except:
-        return 20.0, 0.0, "N/A", "N/A"
+        if vix_df.empty or spy_df.empty:
+            return 20.0, 0.0, "🟡 數據載入中", "---"
+
+        # 確保列名正確 (處理多層索引問題)
+        vix_close = vix_df['Close']
+        spy_close = spy_df['Close']
+
+        v_price = float(vix_close.iloc[-1])
+        v_prev = float(vix_close.iloc[-2])
+        s_now = float(spy_close.iloc[-1])
+        s_prev = float(spy_close.iloc[-2])
+        
+        spy_change = ((s_now - s_prev) / s_prev) * 100
+        
+        v_status = "🔴 極端恐慌" if v_price > 28 else "🟡 波動放大" if v_price > 20 else "🟢 環境平穩"
+        v_trend = "📈 恐慌升溫" if v_price > v_prev else "📉 恐慌緩解"
+        
+        return v_price, spy_change, v_status, v_trend
+    except Exception as e:
+        st.error(f"大盤數據獲取異常: {e}")
+        return 20.0, 0.0, "⚠️ 數據延遲", "N/A"
 
 # --- 3. Telegram 結構化通知系統 ---
 def send_pro_notification(sym, action, res_details, price, pc, vr, adr_u, vix_info, lookback_k):
