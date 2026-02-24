@@ -147,7 +147,7 @@ def check_signals(df, p_limit, v_limit, use_brk, use_macd):
 # --- 6. 側邊欄配置 ---
 with st.sidebar:
     st.header("🗄️ Trader 策略中心")
-    sym_input = st.text_input("監控代碼 (逗號分隔)", value="TSLA, NVDA, AAPL, BTC-USD").upper()
+    sym_input = st.text_input("監控代碼 (逗號分隔)", value="TSLA, NIO, TSLL, XPEV, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM, GLD, BTC-USD").upper()
     symbols = [s.strip() for s in sym_input.split(",") if s.strip()]
     
     selected_intervals = st.multiselect("共振週期設定", ["1m", "5m", "15m", "30m", "1h"], default=["5m", "15m"])
