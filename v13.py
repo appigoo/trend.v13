@@ -136,7 +136,7 @@ def check_signals(df, p_limit, v_limit, use_brk, use_macd, lookback_k):
 # --- 6. 側邊欄 ---
 with st.sidebar:
     st.header("🗄️ 交易者工作站")
-    sym_input = st.text_input("代碼名單", value="TSLA, NVDA, QQQ, BTC-USD").upper()
+    sym_input = st.text_input("代碼名單", value="TSLA, NIO, TSLL, XPEV, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM, BTC-USD,GLD,QQQ,VOO").upper()
     symbols = [s.strip() for s in sym_input.split(",") if s.strip()]
     selected_intervals = st.multiselect("共振週期", ["1m", "5m", "15m", "30m"], default=["5m", "15m"])
     lookback_k = st.slider("MACD 衰竭 K 線數", 3, 15, 7)
