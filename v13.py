@@ -43,17 +43,38 @@ def diagnose_trend_stage(df):
 # --- 2. 市場環境診斷 ---
 def get_market_context():
     try:
-        spy_ticker = yf.Ticker("IVV")
-        vix_data = yf.download("^VIX", period="5d", interval="15m", progress=False, repair=True)
-        spy_data = spy_ticker.history(period="5d", interval="15m")
-        #spy_data = yf.download("IVV", period="5d", interval="15m", progress=False, repair=True)
+        # 使用更穩定的時間框架
+        vix_data = yf.download("^VIX", period="5d", interval="1h", progress=False)
+        spy_data = yf.download("SPY", period="5d", interval="1h", progress=False)
+
+        # 檢查數據是否有效
+        if vix_data.empty or spy_data.empty:
+            raise ValueError("DataFrame is empty")
+
+        if len(vix_data) < 2 or len(spy_data) < 2:
+            raise ValueError("Not enough data points")
+
         vix_price = vix_data['Close'].iloc[-1]
         vix_prev = vix_data['Close'].iloc[-2]
-        spy_change = ((spy_data['Close'].iloc[-1] - spy_data['Close'].iloc[-2]) / spy_data['Close'].iloc[-2]) * 100
-        v_status = "🔴 極端恐慌" if vix_price > 28 else "🟡 波動放大" if vix_price > 20 else "🟢 環境平穩"
+
+        spy_last = spy_data['Close'].iloc[-1]
+        spy_prev = spy_data['Close'].iloc[-2]
+        spy_change = ((spy_last - spy_prev) / spy_prev) * 100
+
+        # 市場環境分類
+        if vix_price > 28:
+            v_status = "🔴 極端恐慌"
+        elif vix_price > 20:
+            v_status = "🟡 波動放大"
+        else:
+            v_status = "🟢 環境平穩"
+
         v_trend = "📈 恐慌升溫" if vix_price > vix_prev else "📉 恐慌緩解"
+
         return float(vix_price), float(spy_change), v_status, v_trend
-    except:
+
+    except Exception as e:
+        print("Market context error:", e)
         return 20.0, 0.0, "N/A", "N/A"
 
 # --- 3. Telegram 通知 (同步更新位階信息) ---
