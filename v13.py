@@ -64,21 +64,48 @@ def fetch_pro_data(symbol, p, i):
     except: return None
 
 # --- 3. Telegram 通知 (含市場背景說明) ---
-def send_pro_notification(sym, action, details, price, vix_info):
+# --- 優化後的 Telegram 詳盡通知函式 ---
+def send_pro_notification(sym, action, res_details, price, vix_info, pc, vr, adr_u):
     try:
         token = st.secrets["TELEGRAM_BOT_TOKEN"]
         chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        
+        # 1. 市場環境診斷
+        vix_val, spy_c, v_stat, v_trend = vix_info
+        market_summary = f"{v_stat} ({v_trend}) | SPY: {spy_c:+.2f}%"
+        
+        # 2. 能量狀態診斷
+        energy_warning = ""
+        if adr_u > 90:
+            energy_warning = "⚠️ 【警告：能量耗盡】今日波動已達 ADR 90% 以上，小心假突破！\n"
+        elif adr_u < 30:
+            energy_warning = "✅ 【空間充足】今日波幅尚小，突破後潛力較大。\n"
+
+        # 3. 彙整各週期訊號細節
+        period_brief = ""
+        for interval, detail in res_details.items():
+            # 將內部的細節符號化
+            clean_detail = detail.replace("•", "  ▫️")
+            period_brief += f"⏰ {interval} 週期:\n{clean_detail}\n"
+
+        # 4. 組合最終訊息
         message = (
             f"🔔 {action}: {sym}\n"
-            f"現價: {price:.2f}\n"
+            f"💰 現價: {price:.2f} ({pc:+.2f}%)\n"
+            f"📊 量比: {vr:.1f}x | ADR已耗: {adr_u:.1f}%\n"
             f"--------------------\n"
-            f"📊 市場環境: VIX {vix_info[0]:.2f} ({vix_info[2]} | {vix_info[3]})\n"
-            f"📋 訊號詳情:\n{details}"
+            f"🌐 市場環境: {market_summary}\n"
+            f"{energy_warning}"
+            f"--------------------\n"
+            f"📋 觸發細節:\n{period_brief}"
+            f"--------------------\n"
+            f"📅 時間: {datetime.now().strftime('%H:%M:%S')}"
         )
+        
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         requests.get(url, params={"chat_id": chat_id, "text": message}, timeout=5)
-    except: pass
-
+    except Exception as e:
+        st.error(f"Telegram 發送出錯: {e}")
 # --- 4. 單週期訊號判定 ---
 def get_signal_pro(df, p_limit, v_limit, use_break, use_macd, vix_price):
     if df is None or len(df) < 10: return None, ""
