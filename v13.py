@@ -44,8 +44,8 @@ def diagnose_trend_stage(df):
 def get_market_context():
     try:
         # 使用更穩定的時間框架
-        vix_data = yf.download("^VIX", period="5d", interval="1h", progress=False)
-        spy_data = yf.download("SPY", period="5d", interval="1h", progress=False)
+        vix_data = yf.download("^VIX", period="5d", interval="15m", progress=False)
+        spy_data = yf.download("SPY", period="5d", interval="15m", progress=False)
 
         # 檢查數據是否有效
         if vix_data.empty or spy_data.empty:
