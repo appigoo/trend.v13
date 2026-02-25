@@ -8,7 +8,7 @@ import requests
 import re
 
 # --- 1. 頁面配置 ---
-st.set_page_config(page_title="專業級多週期共振監控系統", layout="wide")
+st.set_page_config(page_title="專業級多週期共振監控系統 V3.1", layout="wide")
 
 st.markdown("""
 <style>
@@ -19,192 +19,151 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 支撐阻力與市場診斷函數 ---
+# --- 2. 市場診斷與支撐阻力 ---
 def get_market_context():
     try:
         vix_data = yf.download("^VIX", period="5d", interval="1d", progress=False)
         spy_data = yf.download("SPY", period="5d", interval="1d", progress=False)
         if isinstance(vix_data.columns, pd.MultiIndex): vix_data.columns = vix_data.columns.get_level_values(0)
         if isinstance(spy_data.columns, pd.MultiIndex): spy_data.columns = spy_data.columns.get_level_values(0)
-        vix_price = float(vix_data['Close'].iloc[-1])
-        vix_prev = float(vix_data['Close'].iloc[-2])
-        spy_change = ((spy_data['Close'].iloc[-1] - spy_data['Close'].iloc[-2]) / spy_data['Close'].iloc[-2]) * 100
-        v_status = "🔴 極端恐慌" if vix_price > 28 else "🟡 波動放大" if vix_price > 20 else "🟢 環境平穩"
-        v_trend = "📈 恐慌升溫" if vix_price > vix_prev else "📉 恐慌緩解"
-        return vix_price, spy_change, v_status, v_trend
-    except:
-        return 20.0, 0.0, "數據讀取中", "N/A"
+        vix_p = float(vix_data['Close'].iloc[-1])
+        spy_c = ((spy_data['Close'].iloc[-1] - spy_data['Close'].iloc[-2]) / spy_data['Close'].iloc[-2]) * 100
+        v_stat = "🔴 極端恐慌" if vix_p > 28 else "🟡 波動放大" if vix_p > 20 else "🟢 環境平穩"
+        return vix_p, spy_c, v_stat
+    except: return 20.0, 0.0, "數據讀取中"
 
 def get_pivot_levels(df_daily):
-    """計算經典樞軸點 (Pivot Points)"""
     try:
         if len(df_daily) < 2: return None
-        prev_day = df_daily.iloc[-2] # 取前一交易日
-        high = prev_day['High']
-        low = prev_day['Low']
-        close = prev_day['Close']
-        
-        pivot = (high + low + close) / 3
-        r1 = (2 * pivot) - low
-        s1 = (2 * pivot) - high
-        return {"P": pivot, "R1": r1, "S1": s1}
-    except:
-        return None
+        prev = df_daily.iloc[-2]
+        p = (prev['High'] + prev['Low'] + prev['Close']) / 3
+        return {"R1": (2 * p) - prev['Low'], "S1": (2 * p) - prev['High']}
+    except: return None
 
-# --- 3. Telegram 通知系統 (整合支撐阻力) ---
+# --- 3. 數據抓取 (包含更多 EMA 週期以匹配圖片特徵) ---
+def fetch_pro_data(symbol, interval_p):
+    try:
+        fetch_range = "60d" if interval_p in ["30m", "15m"] else "7d"
+        df = yf.download(symbol, period=fetch_range, interval=interval_p, progress=False)
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        c = df['Close']
+        df['EMA5'] = c.ewm(span=5, adjust=False).mean()
+        df['EMA10'] = c.ewm(span=10, adjust=False).mean()
+        df['EMA20'] = c.ewm(span=20, adjust=False).mean()
+        df['EMA40'] = c.ewm(span=40, adjust=False).mean() # 圖片中的特徵
+        df['EMA60'] = c.ewm(span=60, adjust=False).mean()
+        df['EMA200'] = c.ewm(span=200, adjust=False).mean()
+        df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
+        
+        macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
+        df['Hist'] = macd - macd.ewm(span=9, adjust=False).mean()
+        return df.dropna(subset=['EMA200'])
+    except: return None
+
+# --- 4. 訊號判定 (核心：整合圖片中的趨勢特徵) ---
+def check_signals(df, p_limit, v_limit, use_brk, use_macd, lookback_k):
+    if df is None or len(df) < lookback_k + 2: return None, "", "SIDE"
+    last = df.iloc[-1]; prev = df.iloc[-2]
+    price = float(last['Close'])
+    pc = ((price - prev['Close']) / prev['Close']) * 100
+    vr = float(last['Volume'] / last['Vol_Avg']) if last['Vol_Avg'] > 0 else 1
+    
+    # 圖片特徵 A: 均線束發散排列 (EMA Ribbon)
+    is_ema_bull = last['EMA5'] > last['EMA10'] > last['EMA20'] > last['EMA60']
+    is_ema_bear = last['EMA5'] < last['EMA10'] < last['EMA20'] < last['EMA60']
+    
+    # 圖片特徵 B: MACD 柱狀圖趨勢 (Dynamic Momentum)
+    macd_bull_pulse = last['Hist'] > 0 and last['Hist'] > prev['Hist']
+    macd_bear_pulse = last['Hist'] < 0 and last['Hist'] < prev['Hist']
+    
+    # 基礎形態
+    is_brk_h = price > df.iloc[-6:-1]['High'].max() if use_brk else False
+    is_brk_l = price < df.iloc[-6:-1]['Low'].min() if use_brk else False
+
+    reasons = []
+    sig = None
+
+    # 多頭共振：均線發散 + MACD動能 + (突破或量價)
+    if is_ema_bull and macd_bull_pulse and (pc >= p_limit or is_brk_h) and vr >= v_limit:
+        sig = "BULL"
+        reasons.append(f"均線發散+MACD動能(量比:{vr:.1f})")
+    
+    # 空頭共振：均線排列 + MACD賣壓 + (跌穿或量價)
+    elif is_ema_bear and macd_bear_pulse and (pc <= -p_limit or is_brk_l) and vr >= v_limit:
+        sig = "BEAR"
+        reasons.append(f"空頭排列+MACD賣壓(量比:{vr:.1f})")
+        
+    trend = "BULL" if price > last['EMA60'] else "BEAR" if price < last['EMA60'] else "SIDE"
+    return sig, "".join(reasons), trend
+
+# --- 5. Telegram 通知 ---
 def send_pro_notification(sym, action, res_details, price, pc, vr, adr_u, vix_info, levels, lookback_k):
     try:
         token = st.secrets["TELEGRAM_BOT_TOKEN"]
         chat_id = st.secrets["TELEGRAM_CHAT_ID"]
-        v_val, spy_c, v_stat, v_trend = vix_info
-        
-        # 支撐阻力文本
-        level_text = "N/A"
-        if levels:
-            dist_r1 = ((levels['R1'] - price) / price) * 100
-            level_text = f"上壓 R1: {levels['R1']:.2f} (距 {dist_r1:+.1f}%)\n   • 下撐 S1: {levels['S1']:.2f}"
-
-        period_brief = ""
-        for interval, detail in res_details.items():
-            if detail: period_brief += f"⏰ 【{interval}】\n{detail}\n\n"
-
+        v_val, spy_c, v_stat = vix_info
+        lv_msg = f"R1:{levels['R1']:.2f} | S1:{levels['S1']:.2f}" if levels else "N/A"
         message = (
-            f"🔔 {action}: {sym}\n"
-            f"💰 價格: {price:.2f} ({pc:+.2f}%)\n"
-            f"📊 量比: {vr:.1f}x | ADR: {adr_u:.1f}%\n"
-            f"--------------------\n"
-            f"🚩 關鍵位置 (Pivot):\n"
-            f"   • {level_text}\n"
-            f"--------------------\n"
-            f"🌐 市場環境: {v_stat}\n"
-            f"   • VIX: {v_val:.2f} | SPY: {spy_c:+.2f}%\n"
-            f"--------------------\n"
-            f"📋 策略細節:\n{period_brief}"
-            f"📅 {datetime.now().strftime('%H:%M:%S')}"
+            f"🔔 {action}: {sym}\n💰 價格: {price:.2f} ({pc:+.2f}%)\n📊 量比: {vr:.1f}x | ADR: {adr_u:.1f}%\n"
+            f"📍 位置: {lv_msg}\n🌐 VIX: {v_val:.2f} | SPY: {spy_c:+.2f}%\n📋 細節: {res_details}\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
         requests.get(f"https://api.telegram.org/bot{token}/sendMessage", params={"chat_id": chat_id, "text": message}, timeout=5)
-    except:
-        pass
+    except: pass
 
-# --- 4. 數據抓取 ---
-def fetch_pro_data(symbol, range_p, interval_p):
-    try:
-        df = yf.download(symbol, period=range_p, interval=interval_p, progress=False)
-        if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        close = df['Close']
-        df['EMA20'] = close.ewm(span=20, adjust=False).mean()
-        df['EMA60'] = close.ewm(span=60, adjust=False).mean()
-        df['EMA200'] = close.ewm(span=200, adjust=False).mean()
-        df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
-        ema12 = close.ewm(span=12, adjust=False).mean()
-        ema26 = close.ewm(span=26, adjust=False).mean()
-        diff = ema12 - ema26
-        df['Hist'] = diff - diff.ewm(span=9, adjust=False).mean()
-        return df
-    except: return None
-
-# --- 5. 訊號邏輯 (保持穩定) ---
-def check_signals(df, p_limit, v_limit, use_brk, use_macd, lookback_k):
-    if df is None or len(df) < lookback_k + 2: return None, "", False
-    last = df.iloc[-1]; prev = df.iloc[-2]
-    price = float(last['Close']); pc = ((price - prev['Close']) / prev['Close']) * 100
-    vr = float(last['Volume']) / float(last['Vol_Avg']) if last['Vol_Avg'] > 0 else 1
-    reasons = []
-    is_bull_trend = price > last['EMA200'] and last['EMA20'] > last['EMA60']
-    is_bear_trend = price < last['EMA200'] and last['EMA20'] < last['EMA60']
-    is_brk_h = price > df.iloc[-6:-1]['High'].max() if use_brk else False
-    is_brk_l = price < df.iloc[-6:-1]['Low'].min() if use_brk else False
-    m_bull = m_bear = False
-    if use_macd:
-        hw = df['Hist'].iloc[-(lookback_k + 1):].values
-        m_bull = all(x < 0 for x in hw[:-1]) and hw[-1] > 0
-        m_bear = all(x > 0 for x in hw[:-1]) and hw[-1] < 0
-    sig_type = "BULL" if (is_bull_trend and pc >= p_limit and vr >= v_limit) or is_brk_h or m_bull else "BEAR" if (is_bear_trend and pc <= -p_limit and vr >= v_limit) or is_brk_l or m_bear else None
-    if sig_type == "BULL":
-        if is_bull_trend and pc >= p_limit: reasons.append(f"  ▫️ 量價強勢({pc:+.2f}%)")
-        if is_brk_h: reasons.append("  ▫️ 5K向上突破")
-        if m_bull: reasons.append(f"  ▫️ MACD {lookback_k}負轉正")
-    elif sig_type == "BEAR":
-        if is_bear_trend and pc <= -p_limit: reasons.append(f"  ▫️ 量價跌穿({pc:+.2f}%)")
-        if is_brk_l: reasons.append("  ▫️ 5K向下破位")
-        if m_bear: reasons.append(f"  ▫️ MACD {lookback_k}正轉負")
-    trend_status = "BULL" if is_bull_trend else "BEAR" if is_bear_trend else "SIDE"
-    return sig_type, "\n".join(reasons), trend_status
-
-# --- 6. 側邊欄與 UI ---
+# --- 6. UI 與 循環 ---
 with st.sidebar:
     st.header("🗄️ 交易者工作站")
-    sym_input = st.text_input("代碼名單", value="TSLA, NVDA, AAPL, QQQ, BTC-USD").upper()
+    sym_input = st.text_input("代碼名單", value="TSLA, NIO, TSLL, XPEV, QQQ, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM, GLD, BTC-USD, COIN").upper()
     symbols = [s.strip() for s in sym_input.split(",") if s.strip()]
     selected_intervals = st.multiselect("共振週期", ["1m", "5m", "15m", "30m"], default=["5m", "15m"])
-    lookback_k = st.slider("MACD 衰竭 K 線數", 3, 15, 7)
     refresh_rate = st.slider("刷新頻率(秒)", 30, 300, 60)
-    st.divider()
-    price_alerts = st.text_area("關鍵價位預警", value="")
-    p_thr = st.number_input("異動閾值(%)", value=1.0)
-    v_thr = st.number_input("量爆倍數", value=1.5)
-    use_brk = st.checkbox("啟用 5K 突破", True)
-    use_macd = st.checkbox("啟用 MACD 反轉", True)
+    p_thr = st.number_input("異動閾值(%)", value=0.8)
+    v_thr = st.number_input("量爆倍數", value=1.2)
+    use_brk = st.checkbox("啟用形態突破", True)
+    use_macd = st.checkbox("啟用MACD動能", True)
 
-# --- 7. 主循環 ---
-st.title("📈 專業級智能監控終端")
+st.title("🛡️ 專業級智能監控終端 V3.1")
 
 placeholder = st.empty()
 
 while True:
-    vix_val, spy_c, v_stat, v_trend = get_market_context()
-    vix_col = "#ff4b4b" if vix_val > 25 else "#00ff00"
-    
+    vix_val, spy_c, v_stat = get_market_context()
     with placeholder.container():
-        st.markdown(f'<div class="vix-banner" style="background-color:{vix_col}22; border: 1px solid {vix_col}; color:{vix_col};">市場診斷：{v_stat} | VIX: {vix_val:.2f} | SPY: {spy_c:+.2f}% | {v_trend}</div>', unsafe_allow_html=True)
-        if symbols and selected_intervals:
+        st.markdown(f'<div class="vix-banner">市場環境：{v_stat} | VIX: {vix_val:.2f} | SPY: {spy_c:+.2f}%</div>', unsafe_allow_html=True)
+        if symbols:
             cols = st.columns(len(symbols))
             for i, sym in enumerate(symbols):
-                adr_u, levels = 0, None
                 try:
-                    df_daily = yf.download(sym, period="14d", interval="1d", progress=False)
-                    if isinstance(df_daily.columns, pd.MultiIndex): df_daily.columns = df_daily.columns.get_level_values(0)
-                    adr = (df_daily['High'] - df_daily['Low']).mean()
-                    adr_u = ((df_daily['High'].iloc[-1] - df_daily['Low'].iloc[-1]) / adr) * 100
-                    levels = get_pivot_levels(df_daily) # 計算支撐阻力
-                except: pass
+                    df_d = yf.download(sym, period="20d", interval="1d", progress=False)
+                    if isinstance(df_d.columns, pd.MultiIndex): df_d.columns = df_d.columns.get_level_values(0)
+                    adr = (df_d['High'] - df_d['Low']).mean()
+                    adr_u = ((df_d['High'].iloc[-1] - df_d['Low'].iloc[-1]) / adr) * 100
+                    levels = get_pivot_levels(df_d)
+                except: adr_u, levels = 0, None
 
-                res_signals, res_details, res_trends = [], {}, []
-                main_df = None
+                res_sigs, res_trends, res_details = [], [], {}
+                last_df = None
                 for interval in selected_intervals:
-                    df = fetch_pro_data(sym, "5d", interval)
-                    sig, det, trend = check_signals(df, p_thr, v_thr, use_brk, use_macd, lookback_k)
-                    res_signals.append(sig); res_trends.append(trend)
+                    df = fetch_pro_data(sym, interval)
+                    sig, det, trend = check_signals(df, p_thr, v_thr, use_brk, use_macd, 7)
+                    res_sigs.append(sig); res_trends.append(trend)
                     if sig: res_details[interval] = det
-                    main_df = df
-
-                if main_df is not None:
-                    cur_p = float(main_df['Close'].iloc[-1])
-                    cur_pc = ((cur_p - main_df['Close'].iloc[-2]) / main_df['Close'].iloc[-2]) * 100
-                    cur_vr = float(main_df['Volume'].iloc[-1] / main_df['Vol_Avg'].iloc[-1]) if main_df['Vol_Avg'].iloc[-1] > 0 else 1.0
+                    last_df = df
+                
+                if last_df is not None:
+                    cp = float(last_df['Close'].iloc[-1]); c_pc = ((cp - last_df['Close'].iloc[-2]) / last_df['Close'].iloc[-2]) * 100
+                    c_vr = float(last_df['Volume'].iloc[-1] / last_df['Vol_Avg'].iloc[-1]) if last_df['Vol_Avg'].iloc[-1] > 0 else 1
+                    is_bull = (res_sigs[0] == "BULL") and (res_trends[-1] == "BULL")
+                    is_bear = (res_sigs[0] == "BEAR") and (res_trends[-1] == "BEAR")
                     
-                    # 價格警報邏輯
-                    match = re.search(rf"{sym}\s*([><]|升穿|跌穿)\s*(\d+\.?\d*)", price_alerts.upper())
-                    if match:
-                        op, target = match.group(1), float(match.group(2))
-                        if (op in ['>', '升穿'] and cur_p >= target) or (op in ['<', '跌穿'] and cur_p <= target):
-                            send_pro_notification(sym, "🎯 關鍵位報警", {"價格預警": f"觸及目標 {target}"}, cur_p, cur_pc, cur_vr, adr_u, (vix_val, spy_c, v_stat, v_trend), levels, lookback_k)
-
-                    # 共振判定
-                    is_bull = (res_signals[0] == "BULL") and (res_trends[-1] == "BULL")
-                    is_bear = (res_signals[0] == "BEAR") and (res_trends[-1] == "BEAR")
+                    color = "#00ff00" if is_bull else "#ff4b4b" if is_bear else "#888"
+                    label = "🚀 多頭加速" if is_bull else "🔻 空頭加速" if is_bear else "⚖️ 觀望"
+                    style = "blink-bull" if is_bull else "blink-bear" if is_bear else ""
                     
-                    status, color, style = "⚖️ 觀望", "#888", ""
-                    if is_bull:
-                        status, color, style = "🚀 多頭共振", "#00ff00", "blink-bull"
-                        send_pro_notification(sym, "🔥 多頭共振觸發", res_details, cur_p, cur_pc, cur_vr, adr_u, (vix_val, spy_c, v_stat, v_trend), levels, lookback_k)
-                    elif is_bear:
-                        status, color, style = "🔻 空頭共振", "#ff4b4b", "blink-bear"
-                        send_pro_notification(sym, "❄️ 空頭共振觸發", res_details, cur_p, cur_pc, cur_vr, adr_u, (vix_val, spy_c, v_stat, v_trend), levels, lookback_k)
+                    if is_bull or is_bear:
+                        send_pro_notification(sym, label, str(res_details), cp, c_pc, c_vr, adr_u, (vix_val, spy_c, v_stat), levels, 7)
 
-                    cols[i].markdown(f"<div class='{style}' style='border:1px solid #444; padding:15px; border-radius:10px; text-align:center;'><h3>{sym}</h3><h2 style='color:{color};'>{status}</h2><p style='font-size:1.4em;'><b>{cur_p:.2f}</b></p><hr style='border:0.5px solid #333;'><p style='font-size:0.8em;'>R1: {levels['R1']:.2f} | S1: {levels['S1']:.2f}</p></div>", unsafe_allow_html=True)
-
-        st.divider()
-        st.caption(f"系統運行中 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    cols[i].markdown(f"<div class='{style}' style='border:1px solid #444; padding:10px; border-radius:10px; text-align:center;'><h4>{sym}</h4><h3 style='color:{color}'>{label}</h3><p style='font-size:1.2em;'>{cp:.2f}</p><p style='font-size:0.7em; color:#aaa;'>ADR: {adr_u:.1f}%</p></div>", unsafe_allow_html=True)
     time.sleep(refresh_rate)
