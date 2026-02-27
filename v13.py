@@ -115,7 +115,7 @@ def send_pro_notification(sym, action, res_details, price, pc, vr, adr_u, vix_in
 # --- 6. UI 與 循環 ---
 with st.sidebar:
     st.header("🗄️ 交易者工作站")
-    sym_input = st.text_input("代碼名單", value="TSLA, NVDA, AAPL, QQQ, BTC-USD").upper()
+    sym_input = st.text_input("代碼名單", value="TSLA, NIO, TSLL, XPEV, QQQ, VOO, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM, GLD, BTC-USD").upper()
     symbols = [s.strip() for s in sym_input.split(",") if s.strip()]
     selected_intervals = st.multiselect("共振週期", ["1m", "5m", "15m", "30m"], default=["5m", "15m"])
     refresh_rate = st.slider("刷新頻率(秒)", 30, 300, 60)
